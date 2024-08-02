@@ -302,7 +302,9 @@ class MoNE(nn.Module):
 
         self.head = ClassificationHead(self.model_dim, num_classes)
 
-    def forward(self, x, alpha):
+        self.alpha = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
         # Patchification stem, converts input image batch to batch of embedded tokens
         x = self.patch(x)
         x = rearrange(x, 'b c h w -> b (h w) c')
@@ -313,7 +315,7 @@ class MoNE(nn.Module):
 
         # Run through each nested expert layer
         for layer in self.layers:
-            x, router_prob = layer(x, router_prob, alpha)
+            x, router_prob = layer(x, router_prob, self.alpha)
 
         # Compute classification scores
         output = self.head(x)

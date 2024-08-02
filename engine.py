@@ -9,7 +9,6 @@ def train_one_epoch(
     ddp_model,
     objective,
     scaler,
-    alpha,
     epoch,
     device_id,
     writer,
@@ -23,7 +22,7 @@ def train_one_epoch(
         labels = labels.to(device_id)
 
         with torch.autocast(device_type='cuda'):
-            pred = ddp_model(data, alpha)
+            pred = ddp_model(data)
             loss = objective(pred, labels)
 
         scaler.scale(loss).backward()
@@ -39,7 +38,6 @@ def test(
     ddp_model,
     testloader,
     device_id,
-    alpha,
     epoch,
     writer,
 ):
@@ -52,7 +50,7 @@ def test(
         labels = labels.to(device_id)
 
         with torch.autocast(device_type='cuda'):
-            pred = ddp_model(data, alpha)
+            pred = ddp_model(data)
             _, class_pred = torch.max(pred, 1)
 
         gathered_labels = [torch.zeros_like(labels) for _ in range(dist.get_world_size())]

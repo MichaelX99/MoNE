@@ -30,7 +30,6 @@ def main():
     # add in evaluation
     # add in augmentations
 
-    alpha = 0.
     print('Starting training')
     for epoch in range(num_epochs):
         for ind, (data, labels) in enumerate(trainloader):
@@ -40,7 +39,7 @@ def main():
             labels = labels.to('cuda')
 
             with torch.autocast(device_type='cuda'):
-                pred = model(data, alpha)
+                pred = model(data)
                 loss = objective(pred, labels)
 
             scaler.scale(loss).backward()
@@ -50,8 +49,6 @@ def main():
             if ind % 10:
                 log_str = f'Epoch: {epoch}, Iter: {ind}/{len(trainloader)}, Loss: {loss.cpu().item()}'
                 print(log_str)
-
-        alpha += 0.1
 
 if __name__ == "__main__":
     main()

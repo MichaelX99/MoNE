@@ -60,8 +60,7 @@ def main():
     scaler = torch.amp.GradScaler(device_id)
 
     writer = SummaryWriter()
-
-    alpha = 0.
+    
     print('Starting training')
     for epoch in range(num_epochs):
         train_one_epoch(
@@ -71,7 +70,6 @@ def main():
             ddp_model,
             objective,
             scaler,
-            alpha,
             epoch,
             device_id,
             writer,
@@ -81,14 +79,9 @@ def main():
             ddp_model,
             testloader,
             device_id,
-            alpha,
             epoch,
             writer,
         )
-
-
-
-        alpha += 0.1
 
     dist.destroy_process_group()
 
