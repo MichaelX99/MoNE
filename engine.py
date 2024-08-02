@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 import tqdm
 from torchvision.transforms import v2
+import random
 
 def train_one_epoch(
     train_sampler,
@@ -21,13 +22,16 @@ def train_one_epoch(
     for step, (data, labels) in enumerate(trainloader):
         opt.zero_grad()
 
+        allowed_eps = [0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+        sampled_eps = random.choice(allowed_eps)
+
         data = data.to(device_id)
         labels = labels.to(device_id)
 
         data, labels = mixup(data, labels)
 
         with torch.autocast(device_type='cuda'):
-            pred = ddp_model(data)
+            pred = ddp_model(data, sampled_eps)
             loss = objective(pred, labels)
 
         scaler.scale(loss).backward()
@@ -45,6 +49,7 @@ def test(
     device_id,
     epoch,
     writer,
+    eps,
 ):
     ddp_model.eval()
 
@@ -55,7 +60,7 @@ def test(
         labels = labels.to(device_id)
 
         with torch.autocast(device_type='cuda'):
-            pred = ddp_model(data)
+            pred = ddp_model(data, eps)
             _, class_pred = torch.max(pred, 1)
 
         gathered_labels = [torch.zeros_like(labels) for _ in range(dist.get_world_size())]

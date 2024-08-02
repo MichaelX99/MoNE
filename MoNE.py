@@ -301,9 +301,9 @@ class MoNE(nn.Module):
 
         self.alpha = nn.Parameter(torch.zeros(1))
 
-        self.capacity_dist = self.determine_capacity(eps)
+        self.determine_capacity(eps)
 
-    def forward(self, x):
+    def forward(self, x, eps=None):
         # Patchification stem, converts input image batch to batch of embedded tokens
         x = self.patch(x)
         x = rearrange(x, 'b c h w -> b (h w) c')
@@ -311,6 +311,9 @@ class MoNE(nn.Module):
 
         # Router, computes router probability. Probability of each token going to one of the E number of nested experts (batch, number of tokens, number of nested experts)
         router_prob = F.softmax(self.router(x), dim=-1)
+
+        if eps:
+            self.determine_capacity(eps)
 
         # Sort the tokens for quicker access in all subsequent layers
         x, router_prob = self.sort(x, router_prob)
@@ -369,7 +372,7 @@ class MoNE(nn.Module):
             t1 = x / delta
             t1 = t1.sum()
 
-            t2 = x * np.log10(x)
+            t2 = x * np.log10(x + 1e-8)
             t2 = t2.sum() * beta
 
             return t2 - t1
@@ -394,7 +397,6 @@ class MoNE(nn.Module):
         res = opt.minimize(fun, init, args=args, method='SLSQP', constraints=cons)
 
         out = res.x
-        print(f'Using capacity distribution {out}')
 
-        return out
+        self.capacity_dist = out
 

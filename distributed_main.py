@@ -18,7 +18,11 @@ def fix_print(rank):
     builtins.print = print
 
 
-def main(eps: float = 0.6):
+def main(
+    eps: float = 0.6, # NOTE capacity is randomized during training, only used at test time # TODO implement test time
+    batch_size: int = 256, # total effective batch size for the world
+    num_epochs: int = 50,
+):
     # TODO
     # add in learning rate scheduler
     # add in stochastic depth regularization
@@ -37,9 +41,8 @@ def main(eps: float = 0.6):
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ]
     )
-    batch_size = 256 // dist.get_world_size()
+    batch_size = batch_size // dist.get_world_size()
     print(f'Using per-gpu batch size: {batch_size}')
-    num_epochs = 50
 
     trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
     train_sampler = torch.utils.data.DistributedSampler(trainset)
@@ -89,6 +92,7 @@ def main(eps: float = 0.6):
             device_id,
             epoch,
             writer,
+            eps,
         )
 
     dist.destroy_process_group()
