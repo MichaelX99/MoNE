@@ -19,21 +19,23 @@ def fix_print(rank):
 
 def main():
     # TODO
-    # add in model checkpointing
-    # add in evaluation
-    # add in augmentations
-    # add in tensorboard logging
+    # add in weight decay
+    # add in learning rate scheduler
+    # add in stochastic depth regularization
+    # add in capacity distribution estimation
+    # add in warm up
+    # add in gradient clipping
 
     dist.init_process_group('nccl')
     rank = dist.get_rank()
     print(f'Starting DDP on rank {rank}')
     fix_print(rank)
 
-
     transform = transforms.Compose(
         [
+            transforms.RandAugment(),
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ]
     )
     batch_size = 256 // dist.get_world_size()

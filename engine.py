@@ -1,6 +1,7 @@
 import torch
 import torch.distributed as dist
 import tqdm
+from torchvision.transforms import v2
 
 def train_one_epoch(
     train_sampler,
@@ -13,6 +14,8 @@ def train_one_epoch(
     device_id,
     writer,
 ):
+    mixup = v2.MixUp(num_classes=10)
+
     ddp_model.train()
     train_sampler.set_epoch(epoch)
     for step, (data, labels) in enumerate(trainloader):
@@ -20,6 +23,8 @@ def train_one_epoch(
 
         data = data.to(device_id)
         labels = labels.to(device_id)
+
+        data, labels = mixup(data, labels)
 
         with torch.autocast(device_type='cuda'):
             pred = ddp_model(data)
