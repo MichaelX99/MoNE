@@ -8,6 +8,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import builtins
 from engine import train_one_epoch, test
 from torch.utils.tensorboard import SummaryWriter
+import typer
 
 def fix_print(rank):
     builtin_print = builtins.print
@@ -17,14 +18,12 @@ def fix_print(rank):
     builtins.print = print
 
 
-def main():
+def main(eps: float = 0.6):
     # TODO
-    # add in weight decay
     # add in learning rate scheduler
     # add in stochastic depth regularization
-    # add in capacity distribution estimation
     # add in warm up
-    # add in gradient clipping
+    assert eps <= 1.0 and eps >= 0., f'eps must be between 0 and 1, not {eps}'
 
     dist.init_process_group('nccl')
     rank = dist.get_rank()
@@ -40,7 +39,7 @@ def main():
     )
     batch_size = 256 // dist.get_world_size()
     print(f'Using per-gpu batch size: {batch_size}')
-    num_epochs = 20
+    num_epochs = 50
 
     trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
     train_sampler = torch.utils.data.DistributedSampler(trainset)
@@ -61,7 +60,7 @@ def main():
 
     img_shape = trainset[0][0].shape[-1]
     device_id = rank % torch.cuda.device_count()
-    model = MoNE(img_shape).to(device_id)
+    model = MoNE(img_shape, eps).to(device_id)
     ddp_model = DDP(model, device_ids=[device_id])
 
     objective = nn.CrossEntropyLoss()
@@ -95,4 +94,4 @@ def main():
     dist.destroy_process_group()
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)

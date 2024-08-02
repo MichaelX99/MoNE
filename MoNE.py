@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import functional as F, init
 from einops import rearrange
 import math
+import numpy as np
+import scipy.optimize as opt
 
 def nested_expert_token_selection(raw_router_prob, x):
     B = x.shape[0] # Number of elements in the batch
@@ -278,7 +280,7 @@ class ClassificationHead(nn.Module):
         return x
 
 class MoNE(nn.Module):
-    def __init__(self, img_size):
+    def __init__(self, img_size, eps):
         super().__init__()
 
         self.model_dim = 256
@@ -298,6 +300,8 @@ class MoNE(nn.Module):
         self.head = ClassificationHead(self.model_dim, num_classes)
 
         self.alpha = nn.Parameter(torch.zeros(1))
+
+        self.capacity_dist = self.determine_capacity(eps)
 
     def forward(self, x):
         # Patchification stem, converts input image batch to batch of embedded tokens
@@ -333,11 +337,9 @@ class MoNE(nn.Module):
         # Each nested expert should choose which patch it wants to process so all nested experts are used equally
         for expert_ind in range(E):
             # Paper describes Capacity Distribution Across Experts for dynamic number of nested experts in order to hit a specified inference FLOP requirement.
-            # This is done offline and is an area of improvement for this code
-            # For an MVP, say each nested expert processes the same number of tokens
-            num_tokens_to_expert = T // E
+            num_tokens_to_expert = math.floor(T * self.capacity_dist[expert_ind])
 
-            _, expert_requests = torch.topk(router_prob[:, :, expert_ind], num_tokens_to_expert, dim=1) # NOTE TODO
+            _, expert_requests = torch.topk(router_prob[:, :, expert_ind], num_tokens_to_expert, dim=1)
 
             # NOTE torch does not support batched index selection
             # Loop over each element of the batch and select the requested tokens for that particular element and then concatenate them back into a single batch
@@ -358,9 +360,41 @@ class MoNE(nn.Module):
 
         return expert_inputs, sorted_router_probs
 
+    def determine_capacity(self, eps):
+        beta = 10
+        delta = 2
+        args = (beta, delta)
 
-if __name__ == "__main__":
-    model = MoNE(32).to('cuda')
-    img = torch.rand(1, 3, 32, 32).to('cuda')
+        def fun(x, beta, delta):
+            t1 = x / delta
+            t1 = t1.sum()
 
-    out = model(img)
+            t2 = x * np.log10(x)
+            t2 = t2.sum() * beta
+
+            return t2 - t1
+
+        def con1(x):
+            return x.sum() - 1
+
+        def con2(x, eps):
+            y = np.array([2**(self.num_experts - i - 1) for i in range(self.num_experts)])
+
+            x = x / y
+            x = x.sum()
+
+            return x - eps
+
+        cons = [
+            {'type': 'eq', 'fun': con1},
+            {'type': 'eq', 'fun': con2, 'args':(eps,)},
+        ]
+
+        init = np.array([1./self.num_experts for _ in range(self.num_experts)])
+        res = opt.minimize(fun, init, args=args, method='SLSQP', constraints=cons)
+
+        out = res.x
+        print(f'Using capacity distribution {out}')
+
+        return out
+
