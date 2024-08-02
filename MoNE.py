@@ -88,40 +88,41 @@ class NEMHSA(nn.Module):
         init.uniform_(self.o_b, -bound, bound)
 
     def forward(self, x, router_prob):
-        # Use the computed router probabilities to route each token to a given nested expert (tokens are still full dimensional here)
-        routed_inputs, sorted_router_probs = nested_expert_token_selection(router_prob, x)
+        E = router_prob.shape[2]
+        T = router_prob.shape[1]
+        num_tokens_per_expert = T // E
 
-        # To still apply token mixing across all tokens, use the nested experts to project each token to its full dimension
-        # (slight compute reduction here over vanilla ViT since the qkv projections are reduced for the last n-1 experts)
         qs = []
         ks = []
         vs = []
-        new_probs = []
-        for expert_ind, expert_input in enumerate(routed_inputs):
+        for expert_ind in range(E):
+            start_ind = expert_ind * num_tokens_per_expert
+            end_ind = start_ind + num_tokens_per_expert
+
+            expert_tokens = x[:, start_ind:end_ind, :]
+            
             # Pre-norm ViT variant
-            expert_input = self.norm(expert_input)
+            expert_tokens = self.norm(expert_tokens)
 
             # Extract the inputs for the specific expert
             m = self.model_dim // 2**(expert_ind)
-            extracted_input = expert_input[:, :, 0:m]
+            extracted_expert_tokens = expert_tokens[:, :, 0:m]
 
             ne_q_w = self.q_w[:, 0:m]
-            q = F.linear(extracted_input, ne_q_w, self.q_b)
+            q = F.linear(extracted_expert_tokens, ne_q_w, self.q_b)
 
             ne_k_w = self.k_w[:, 0:m]
-            k = F.linear(extracted_input, ne_k_w, self.k_b)
+            k = F.linear(extracted_expert_tokens, ne_k_w, self.k_b)
 
             ne_v_w = self.v_w[:, 0:m]
-            v = F.linear(extracted_input, ne_v_w, self.v_b)
+            v = F.linear(extracted_expert_tokens, ne_v_w, self.v_b)
 
             qs.append(q)
             ks.append(k)
             vs.append(v)
-            new_probs.append(sorted_router_probs[expert_ind])
         q = torch.cat(qs, dim=1)
         k = torch.cat(ks, dim=1)
         v = torch.cat(vs, dim=1)
-        new_probs = torch.cat(new_probs, dim=1)
 
         # Break apart for multi-headed SA
         q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
@@ -136,39 +137,33 @@ class NEMHSA(nn.Module):
         attn_out = attn @ v
         attn_out = rearrange(attn_out, 'b h n d -> b n (h d)')
    
-        # Route each mixed token to it's appropriate nested expert
-        routed_outputs, sorted_router_probs = nested_expert_token_selection(new_probs, attn_out)
+        outputs = []
+        for expert_ind in range(E):
+            start_ind = expert_ind * num_tokens_per_expert
+            end_ind = start_ind + num_tokens_per_expert
 
-        # Perform final projection using nested experts
-        out_projs = []
-        for expert_ind, expert_output in enumerate(routed_outputs):
+            residual_expert_tokens = x[:, start_ind:end_ind, :]
+            expert_tokens = attn_out[:, start_ind:end_ind, :]
+
             # Extract the outputs for the specific expert
             m = self.model_dim // 2**(expert_ind)
-            extracted_output = expert_output[:, :, 0:m]
+            extracted_expert_tokens = expert_tokens[:, :, 0:m]
 
             ne_o_w = self.o_w[0:m, 0:m]
             ne_o_b = self.o_b[0:m]
-            out = F.linear(extracted_output, ne_o_w, ne_o_b)
-            
-            out_projs.append(out)
+            out = F.linear(extracted_expert_tokens, ne_o_w, ne_o_b)
 
-        # Residual connection
-        routed_inputs, sorted_router_probs = nested_expert_token_selection(new_probs, x)
-        final_outs = []
-        final_probs = []
-        for expert_output, expert_input, experts_router_prob in zip(out_projs, routed_inputs, sorted_router_probs):
             # Pad the tensor so that the residual connection can be applied
-            pad_amount = expert_input.shape[-1] - expert_output.shape[-1]
+            pad_amount = residual_expert_tokens.shape[-1] - out.shape[-1]
             if pad_amount:
-                expert_output = F.pad(expert_output, [0, pad_amount], value=0.)
-            out = expert_input + expert_output
-            final_outs.append(out)
-            final_probs.append(experts_router_prob)
+                out = F.pad(out, [0, pad_amount], value=0.)
+            out += residual_expert_tokens
+            outputs.append(out)
 
-        final_outs = torch.cat(final_outs, dim=1)
-        final_probs = torch.cat(final_probs, dim=1)
+        outputs = torch.cat(outputs, dim=1)
 
-        return final_outs, final_probs
+        return outputs
+
 
 class NEMLP(nn.Module):
     def __init__(self, model_dim, num_experts):
@@ -203,21 +198,26 @@ class NEMLP(nn.Module):
         init.uniform_(self.l2_b, -bound, bound)
 
     def forward(self, x, router_prob, alpha):
-        # Use the computed router probabilities to route each token to a given nested expert (tokens are still full dimensional here)
-        routed_inputs, sorted_router_probs = nested_expert_token_selection(router_prob, x)
+        E = router_prob.shape[2]
+        T = router_prob.shape[1]
+        num_tokens_per_expert = T // E
 
-        outer_projs = []
-        outer_probs = []
-        for expert_ind, expert_input in enumerate(routed_inputs):
-            expert_input = self.norm(expert_input)
-        
+        outputs = []
+        for expert_ind in range(E):
+            start_ind = expert_ind * num_tokens_per_expert
+            end_ind = start_ind + num_tokens_per_expert
+
+            expert_tokens = x[:, start_ind:end_ind, :]
+
+            expert_tokens = self.norm(expert_tokens)
+            
             # Extract the outputs for the specific expert
             m = self.model_dim // 2**(expert_ind)
-            extracted_input = expert_input[:, :, 0:m]
+            extracted_expert_tokens = expert_tokens[:, :, 0:m]
 
             # Nested layer 1 projection
             ne_l1_w = self.l1_w[:, 0:m]
-            inner_proj = F.linear(extracted_input, ne_l1_w, self.l1_b)
+            inner_proj = F.linear(extracted_expert_tokens, ne_l1_w, self.l1_b)
 
             inner_proj = F.gelu(inner_proj)
             inner_proj = self.drop1(inner_proj)
@@ -229,28 +229,23 @@ class NEMLP(nn.Module):
 
             outer_proj = self.drop2(outer_proj)
 
-            outer_projs.append(outer_proj)
-            outer_probs.append(sorted_router_probs[expert_ind])
+            residual_expert_tokens = x[:, start_ind:end_ind, :]
 
-        # Residual connection
-        final_outs = []
-        final_probs = []
-        for expert_ind, (expert_output, expert_input, experts_router_prob) in enumerate(zip(outer_projs, routed_inputs, outer_probs)):
             # Pad the tensor so that the residual connection can be applied
-            pad_amount = expert_input.shape[-1] - expert_output.shape[-1]
+            pad_amount = residual_expert_tokens.shape[-1] - outer_proj.shape[-1]
             if pad_amount:
-                expert_output = F.pad(expert_output, [0, pad_amount], value=0.)
+                outer_proj = F.pad(outer_proj, [0, pad_amount], value=0.)
 
-            scaling_factor = (alpha * experts_router_prob[:, :, expert_ind] + 1)
+            expert_probs = router_prob[:, start_ind:end_ind, expert_ind]
+
+            scaling_factor = (alpha * expert_probs + 1)
             scaling_factor = scaling_factor[:, :, None]
-            out = expert_input + scaling_factor * expert_output
-            final_outs.append(out)
-            final_probs.append(experts_router_prob)
+            outer_proj = residual_expert_tokens + scaling_factor * outer_proj
+            outputs.append(outer_proj)
 
-        final_outs = torch.cat(final_outs, dim=1)
-        final_probs = torch.cat(final_probs, dim=1)
-
-        return final_outs, final_probs
+        outputs = torch.cat(outputs, dim=1)
+ 
+        return outputs
 
 
 class MoNELayer(nn.Module):
@@ -262,11 +257,11 @@ class MoNELayer(nn.Module):
         self.nested_expert_mlp = NEMLP(model_dim, num_experts)
 
     def forward(self, x, router_prob, alpha):
-        x, router_prob = self.nested_expert_mhsa(x, router_prob)
+        x = self.nested_expert_mhsa(x, router_prob)
 
-        x, router_prob = self.nested_expert_mlp(x, router_prob, alpha)
+        x = self.nested_expert_mlp(x, router_prob, alpha)
 
-        return x, router_prob
+        return x
 
 class ClassificationHead(nn.Module):
     def __init__(self, model_dim, num_classes):
@@ -313,13 +308,59 @@ class MoNE(nn.Module):
         # Router, computes router probability. Probability of each token going to one of the E number of nested experts (batch, number of tokens, number of nested experts)
         router_prob = F.softmax(self.router(x), dim=-1)
 
+        # Sort the tokens for quicker access in all subsequent layers
+        x, router_prob = self.sort(x, router_prob)
+
         # Run through each nested expert layer
         for layer in self.layers:
-            x, router_prob = layer(x, router_prob, self.alpha)
+            x = layer(x, router_prob, self.alpha)
 
         # Compute classification scores
         output = self.head(x)
 
         return output
 
+    def sort(self, x, raw_router_prob):
+        B = x.shape[0] # Number of elements in the batch
+        T = x.shape[1] # Number of tokens in the sequence
+        E = raw_router_prob.shape[-1] # Number of nested experts
 
+        # Clone the router probabilities so they can be used for the selection process but not impacted outside this metho
+        router_prob = raw_router_prob.clone()
+
+        expert_inputs = []
+        sorted_router_probs = []
+        # Each nested expert should choose which patch it wants to process so all nested experts are used equally
+        for expert_ind in range(E):
+            # Paper describes Capacity Distribution Across Experts for dynamic number of nested experts in order to hit a specified inference FLOP requirement.
+            # This is done offline and is an area of improvement for this code
+            # For an MVP, say each nested expert processes the same number of tokens
+            num_tokens_to_expert = T // E
+
+            _, expert_requests = torch.topk(router_prob[:, :, expert_ind], num_tokens_to_expert, dim=1) # NOTE TODO
+
+            # NOTE torch does not support batched index selection
+            # Loop over each element of the batch and select the requested tokens for that particular element and then concatenate them back into a single batch
+            out = torch.cat([torch.index_select(x[i], 0, expert_requests[i]).unsqueeze(0) for i in range(B)])
+            expert_inputs.append(out)
+
+            # Since we need to keep an associated router probability with each token and this is inherently moving tokens around, keep track of the sorted router probability score for later layers
+            sorted_router_prob = torch.cat([torch.index_select(raw_router_prob[i], 0, expert_requests[i]).unsqueeze(0) for i in range(B)])
+            sorted_router_probs.append(sorted_router_prob)
+
+            # Remove the requsted selected tokens from the pool of available tokens to choose from so the same token is not processed by multiple nested experts
+            for i in range(B):
+                router_prob[i, expert_requests[i], :] = 0.
+
+
+        expert_inputs = torch.cat(expert_inputs, dim=1)
+        sorted_router_probs = torch.cat(sorted_router_probs, dim=1)
+
+        return expert_inputs, sorted_router_probs
+
+
+if __name__ == "__main__":
+    model = MoNE(32).to('cuda')
+    img = torch.rand(1, 3, 32, 32).to('cuda')
+
+    out = model(img)
