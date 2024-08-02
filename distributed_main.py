@@ -31,7 +31,7 @@ def main():
     print(f'Starting DDP on rank {rank}')
     fix_print(rank)
 
-    transform = transforms.Compose(
+    train_transform = transforms.Compose(
         [
             transforms.RandAugment(),
             transforms.ToTensor(),
@@ -42,12 +42,19 @@ def main():
     print(f'Using per-gpu batch size: {batch_size}')
     num_epochs = 20
 
-    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
     train_sampler = torch.utils.data.DistributedSampler(trainset)
     train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, batch_size=batch_size, drop_last=True)
     trainloader = torch.utils.data.DataLoader(trainset, num_workers=8, batch_sampler=train_batch_sampler)
 
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    test_transform = transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]
+    )
+
+    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
     test_sampler = torch.utils.data.DistributedSampler(testset, shuffle=False)
     test_batch_sampler = torch.utils.data.BatchSampler(test_sampler, batch_size=batch_size, drop_last=True)
     testloader = torch.utils.data.DataLoader(testset, num_workers=8, batch_sampler=test_batch_sampler)
