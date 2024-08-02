@@ -25,8 +25,10 @@ def main():
     scaler = torch.amp.GradScaler('cuda')
 
     # TODO
+    # NOTE these will probably just be implemented in distributed_main.py
     # add in model checkpointing
-    # add in distributed training
+    # add in evaluation
+    # add in augmentations
 
     alpha = 0.
     print('Starting training')
